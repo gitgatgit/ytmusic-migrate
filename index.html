@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>YTMusic Migrate - YouTube Music Migration Tool</title>
+    <meta charset="utf-8">
+    <meta name="description" content="Migrate YouTube Music playlists, liked songs, and subscriptions between accounts">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+               max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; color: #333; }
+        h1 { color: #FF0000; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h2 { color: #555; margin-top: 30px; }
+        .box { background: #f9f9f9; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #FF0000; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+        a { color: #1a73e8; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .warning { color: #d32f2f; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>🎵 YTMusic Migrate</h1>
+    <p><strong>YouTube Music Account Migration Tool</strong> - Open source CLI tool for migrating your YouTube Music data between accounts.</p>
+
+    <div class="box">
+        <h2>✨ Features</h2>
+        <ul>
+            <li><strong>Playlist Migration</strong> - Transfer all your custom playlists with videos</li>
+            <li><strong>Liked Songs</strong> - Migrate your Liked Music and Liked Videos</li>
+            <li><strong>Watch Later</strong> - Sync your Watch Later queue</li>
+            <li><strong>Subscriptions</strong> - Copy all your channel subscriptions</li>
+            <li><strong>Resume Support</strong> - Continues from where it left off if interrupted</li>
+            <li><strong>Duplicate Detection</strong> - Skips already migrated items</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>📦 Installation</h2>
+        <pre><code>pip install google-auth-oauthlib google-api-python-client</code></pre>
+        <p>Or download the script directly from <a href="https://github.com/mountcliff/ytmusic-migrate" target="_blank">GitHub</a>.</p>
+    </div>
+
+    <div class="box">
+        <h2>🔑 Setup</h2>
+        <ol>
+            <li>Create a project at <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a></li>
+            <li>Enable <strong>YouTube Data API v3</strong></li>
+            <li>Create OAuth credentials (OAuth client ID - Desktop app type)</li>
+            <li>Save as <code>credentials.json</code> in the same folder as the script</li>
+        </ol>
+    </div>
+
+    <div class="box">
+        <h2>🚀 Usage</h2>
+        <pre><code># Migrate everything
+python ytmusic_migrate.py --all
+
+# Migrate only playlists
+python ytmusic_migrate.py --playlists
+
+# Scan what needs to be migrated (no changes)
+python ytmusic_migrate.py --all --scan-only
+
+# Reset migration state
+python ytmusic_migrate.py --reset-state</code></pre>
+    </div>
+
+    <div class="box">
+        <h2>⚡ YouTube API Quota</h2>
+        <p>This tool uses the official YouTube Data API v3. Each operation consumes quota units:</p>
+        <ul>
+            <li><strong>Read operations</strong> (list): 1-3 units</li>
+            <li><strong>Write operations</strong> (insert): 50 units</li>
+        </ul>
+        <p><strong>Default quota:</strong> 10,000 units per day</p>
+        <p><strong>Example migration costs:</strong></p>
+        <ul>
+            <li>200 subscriptions: 200 × 50 = 10,000 units</li>
+            <li>1,000 liked songs: 1,000 × 50 = 50,000 units</li>
+            <li>10 playlists with 100 videos each: 1,000 × 50 + 10 × 1 = 50,010 units</li>
+        </ul>
+        <p class="warning">Note: Large migrations may require quota increase requests.</p>
+    </div>
+
+    <div class="box">
+        <h2>📄 License</h2>
+        <p>Open source - MIT License</p>
+        <p>Source: <a href="https://github.com/mountcliff/ytmusic-migrate" target="_blank">github.com/mountcliff/ytmusic-migrate</a></p>
+    </div>
+</body>
+</html
