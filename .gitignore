@@ -1,2 +1,8 @@
+# Credentials
 credentials.json
-*.json
+*.credentials.json
+*.example.json
+__pycache__/
+*.pyc
+.env
+.venv/
