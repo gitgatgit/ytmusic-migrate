@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Privacy Policy - YTMusic Migrate</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }
+        h1 { color: #FF0000; }
+        a { color: #1a73e8; }
+    </style>
+</head>
+<body>
+    <h1>📜 Privacy Policy</h1>
+    <p><strong>Effective Date:</strong> July 2026</p>
+
+    <h2>1. Introduction</h2>
+    <p>YTMusic Migrate ("we", "our", "the tool") is a personal, open-source CLI tool for migrating YouTube Music data between user accounts. We respect your privacy and are committed to protecting your personal information.</p>
+
+    <h2>2. Information We Collect</h2>
+    <p><strong>We do NOT store any of your data.</strong> This tool runs entirely on your local machine.</p>
+    <p>When you use YTMusic Migrate with your Google account:</p>
+    <ul>
+        <li>You authenticate directly with Google OAuth</li>
+        <li>OAuth tokens are stored locally on YOUR computer at <code>~/.ytmusic_migrate/tokens.json</code></li>
+        <li>We never transmit, store, or access your data on our servers</li>
+        <li>YouTube/Google controls what data is accessible via their API</li>
+    </ul>
+
+    <h2>3. How We Use Your Information</h2>
+    <p>YTMusic Migrate only uses the YouTube Data API v3 to:</p>
+    <ul>
+        <li>Read your playlists, liked videos, watch later, and subscriptions (with your explicit OAuth consent)</li>
+        <li>Create new playlists on your target account</li>
+        <li>Add videos to playlists on your target account</li>
+        <li>Subscribe to channels on your target account</li>
+    </ul>
+    <p><strong>All operations are performed on your behalf with your credentials.</strong></p>
+
+    <h2>4. Data Storage & Security</h2>
+    <p><strong>No cloud storage.</strong> All data remains on your local device.</p>
+    <p>OAuth tokens are cached locally for convenience but can be deleted at any time by removing <code>~/.ytmusic_migrate/tokens.json</code>.</p>
+
+    <h2>5. Google Privacy Policy</h2>
+    <p>This tool uses Google's OAuth 2.0 system. Google's privacy practices are governed by their <a href="https://policies.google.com/privacy" target="_blank">Privacy Policy</a>.</p>
+
+    <h2>6. Data Deletion</h2>
+    <p>To delete all local data:</p>
+    <pre><code>rm -rf ~/.ytmusic_migrate</code></pre>
+    <p>This removes all cached OAuth tokens and migration state from your computer.</p>
+
+    <h2>7. Changes to This Policy</h2>
+    <p>We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page.</p>
+
+    <h2>8. Contact Us</h2>
+    <p>For any questions about this Privacy Policy, please open an issue at our GitHub repository: <a href="https://github.com/mountcliff/ytmusic-migrate" target="_blank">github.com/mountcliff/ytmusic-migrate</a></p>
+</body>
+</html>
