@@ -95,22 +95,30 @@ The target account needs a YouTube channel created.
 
 ## Cache and Credentials Management
 
-### Locations
+### File Locations
 
-- **Tokens:** `~/.ytmusic_migrate/tokens.json` (OAuth credentials)
-- **State:** `~/.ytmusic_migrate/migration_state.json` (migration progress)
+| File | Location | Purpose | Deleting it... |
+|------|----------|---------|----------------|
+| **tokens.json** | `~/.ytmusic_migrate/tokens.json` | OAuth credentials for Google API access | Forces re-authentication, **keeps migration progress** |
+| **migration_state.json** | `~/.ytmusic_migrate/migration_state.json` | Tracks which videos/playlists have been migrated | **Resets migration progress** - will start from scratch |
 
 ### Delete Cache and Credentials
 
-**Delete everything:**
+**Delete everything (tokens + state):**
 ```bash
 rm -rf ~/.ytmusic_migrate
 ```
 
-**Delete specific files:**
+**Delete tokens only (keep progress):**
 ```bash
 rm ~/.ytmusic_migrate/tokens.json
+# Your migration_state.json remains intact - will resume after re-auth
+```
+
+**Delete state only (keep tokens):**
+```bash
 rm ~/.ytmusic_migrate/migration_state.json
+# Will start fresh but keep OAuth credentials
 ```
 
 **Delete specific account token:**
@@ -147,6 +155,18 @@ if cache.exists():
 - **Channel not found:** Create YouTube channel on target account
 - **quotaExceeded:** Wait for reset or request increase
 - **videoNotFound:** Skipped automatically
+- **Port 8080 already in use (OAuth server conflict):**
+  ```bash
+  # Kill the hanging OAuth server without losing progress
+  lsof -ti :8080 | xargs kill -9 2>/dev/null || true
+  # OR
+  pkill -f "python.*8080" 2>/dev/null || true
+  # Verify migration state is intact
+  ls -la ~/.ytmusic_migrate/migration_state.json
+  # Run again - will resume from saved state
+  python3 ytmusic_migrate.py --all
+  ```
+  Your progress is safe - the state file is separate from the OAuth server.
 
 ---
 
