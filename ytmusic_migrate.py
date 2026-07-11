@@ -1150,7 +1150,7 @@ def main():
     print("""
     ╔══════════════════════════════════════════════════════╗
     ║        YTMusic Migrate - YouTube Music Migration Tool       ║
-    ║                  v1.0.0 | github.com/mountcliff            ║
+    ║                  v1.0.0 | github.com/gitgatgit             ║
     ╚══════════════════════════════════════════════════════╝
     """)
     
