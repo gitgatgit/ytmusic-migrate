@@ -16,6 +16,10 @@
 - **Resume Support** - Continues from where it left off if interrupted
 - **Duplicate Detection** - Skips already migrated items automatically
 - **Scan Mode** - Preview what needs migrating without making changes
+- **Duplicate Detection** - Detect duplicate playlists and videos within playlists
+- **Prune Duplicates** - Remove duplicate playlists to clean up target account
+- **Deduplicate Videos** - Remove duplicate video entries within playlists
+- **Verify Completion** - Confirm migrated playlists match source exactly
 
 ---
 
@@ -78,7 +82,77 @@ python ytmusic_migrate.py --all --scan-only
 
 # Reset migration state
 python ytmusic_migrate.py --all --reset-state
+
+# Scan for duplicates (read-only, no changes)
+python ytmusic_migrate.py --scan-duplicates
+
+# Verify playlist completion
+python ytmusic_migrate.py --verify-completion
+
+# Prune duplicate playlists (dry run first)
+python ytmusic_migrate.py --prune-duplicate-playlists --dry-run
+python ytmusic_migrate.py --prune-duplicate-playlists
+
+# Deduplicate videos in playlists (dry run first)
+python ytmusic_migrate.py --deduplicate-videos --dry-run
+python ytmusic_migrate.py --deduplicate-videos
 ```
+
+---
+
+## Duplicate and Verification Features
+
+### Scan for Duplicates (`--scan-duplicates`)
+Lightweight scan that identifies:
+- Duplicate playlist names on target account
+- Duplicate video entries within each playlist
+- Does NOT modify anything, only reports
+
+```bash
+python ytmusic_migrate.py --scan-duplicates
+```
+
+### Verify Completion (`--verify-completion`)
+Checks that all migrated playlists on target match their source counterparts exactly:
+- Compares video counts between source and target
+- Identifies missing videos in target
+- Identifies extra videos in target
+- Detects duplicate videos within target playlists
+
+```bash
+python ytmusic_migrate.py --verify-completion
+```
+
+### Prune Duplicate Playlists (`--prune-duplicate-playlists`)
+Removes orphaned duplicate playlists from target account:
+- Keeps the first playlist with each name
+- Deletes all subsequent duplicates
+- **Always use `--dry-run` first** to preview what will be deleted
+
+```bash
+# Preview what will be deleted
+python ytmusic_migrate.py --prune-duplicate-playlists --dry-run
+
+# Actually delete duplicates
+python ytmusic_migrate.py --prune-duplicate-playlists
+```
+
+### Deduplicate Videos (`--deduplicate-videos`)
+Removes duplicate video entries within playlists on target account:
+- Keeps first occurrence of each video
+- Deletes subsequent duplicates
+- Works on all user-created playlists
+- **Always use `--dry-run` first** to preview changes
+
+```bash
+# Preview what will be removed
+python ytmusic_migrate.py --deduplicate-videos --dry-run
+
+# Actually remove duplicates
+python ytmusic_migrate.py --deduplicate-videos
+```
+
+**Note:** The `--dry-run` flag can be used with any modification command to preview changes without making them.
 
 ---
 
@@ -146,6 +220,18 @@ if cache.exists():
 - Write operations: 50 units
 - Daily default: 10,000 units
 - Recommended: 100,000 units for large migrations
+
+### Quota Costs for Duplicate/Verification Features
+
+| Operation | Quota Cost | Notes |
+|-----------|------------|-------|
+| `--scan-duplicates` | ~2-3 units per playlist | Read-only, minimal cost |
+| `--scan-duplicates` (videos) | ~1-2 units per video in playlist | Only when checking video duplicates |
+| `--verify-completion` | ~2-5 units per playlist pair | Reads both source and target |
+| `--prune-duplicate-playlists` | 50 units per deleted playlist | Write operation |
+| `--deduplicate-videos` | 50 units per deleted video entry | Write operation |
+
+**Tip:** Use `--scan-duplicates` and `--verify-completion` in read-only mode first to assess the situation before using modification commands.
 
 ---
 

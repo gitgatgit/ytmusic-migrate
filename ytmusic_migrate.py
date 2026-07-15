@@ -225,22 +225,43 @@ class YTMusicMigrationTool:
         # Need to authenticate
         print(f"Authenticating {account_type} account...")
         
-        # Create OAuth flow
-        flow = InstalledAppFlow.from_client_config(
-            {
-                "installed": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "redirect_uris": ["http://localhost:8080"],
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token"
-                }
-            },
-            scopes=DEFAULT_SCOPES
-        )
+        # Try multiple ports if 8080 is in use
+        ports_to_try = [8080, 8081, 8082, 8083, 8084]
+        creds = None
+        last_error = None
         
-        # Run the flow
-        creds = flow.run_local_server(port=8080)
+        for port in ports_to_try:
+            try:
+                # Update redirect URI to match the port
+                redirect_uri = f"http://localhost:{port}"
+                
+                # Create OAuth flow
+                flow = InstalledAppFlow.from_client_config(
+                    {
+                        "installed": {
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "redirect_uris": [redirect_uri],
+                            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                            "token_uri": "https://oauth2.googleapis.com/token"
+                        }
+                    },
+                    scopes=DEFAULT_SCOPES
+                )
+                
+                # Run the flow
+                creds = flow.run_local_server(port=port)
+                print(f"  Using port {port} for OAuth")
+                break
+            except OSError as e:
+                last_error = e
+                print(f"  Port {port} in use, trying next...")
+                continue
+        
+        if creds is None:
+            if last_error:
+                raise last_error
+            raise RuntimeError("No available ports for OAuth server")
         
         # Save the token
         self.token_cache[cache_key] = {
@@ -422,7 +443,8 @@ class YTMusicMigrationTool:
         if check_existing:
             existing_on_youtube = self._get_existing_video_ids(service, playlist_id)
         
-        for vid in video_ids:
+        total_videos = len(video_ids)
+        for i, vid in enumerate(video_ids):
             # Skip if already in state or on YouTube
             if vid in already_added or vid in existing_on_youtube:
                 skipped_count += 1
@@ -443,6 +465,10 @@ class YTMusicMigrationTool:
                     body=item
                 ).execute()
                 success_count += 1
+                
+                # Print progress every 50 videos for large batches
+                if total_videos > 50 and (success_count + skipped_count) % 50 == 0:
+                    print(f"  Progress: {success_count + skipped_count}/{total_videos} videos", end="\r")
                 
                 # Update state if tracking
                 if track_id:
@@ -473,6 +499,10 @@ class YTMusicMigrationTool:
         # Save state after batch
         if track_id:
             self._save_migration_state()
+        
+        # Print newline if we printed progress
+        if total_videos > 50:
+            print()  # Newline after progress
         
         return success_count, failed_count, skipped_count
 
@@ -735,6 +765,118 @@ class YTMusicMigrationTool:
         
         return existing
 
+    def _find_duplicate_playlists(self, service) -> Dict[str, List[str]]:
+        """Find duplicate playlists on target account.
+        
+        Returns dict of {playlist_name: [playlist_id1, playlist_id2, ...]} for duplicates.
+        """
+        playlists = self._get_user_playlists(service, include_special=False)
+        name_to_ids = {}
+        
+        for p in playlists:
+            name = p['snippet']['title']
+            if name not in name_to_ids:
+                name_to_ids[name] = []
+            name_to_ids[name].append(p['id'])
+        
+        # Only keep entries with duplicates
+        return {name: ids for name, ids in name_to_ids.items() if len(ids) > 1}
+
+    def _delete_playlist(self, service, playlist_id: str) -> bool:
+        """Delete a playlist. Returns True if successful."""
+        try:
+            service.playlists().delete(id=playlist_id).execute()
+            return True
+        except HttpError as e:
+            print(f"  ✗ Error deleting playlist {playlist_id}: {e}")
+            return False
+
+    def _get_duplicate_videos_in_playlist(self, service, playlist_id: str) -> Dict[str, List[str]]:
+        """Find duplicate video IDs within a playlist.
+        
+        Returns dict of {video_id: [position1, position2, ...]} for duplicates.
+        """
+        try:
+            items = self._get_playlist_items(service, playlist_id)
+        except HttpError as e:
+            print(f"  ✗ Could not read playlist {playlist_id}: {e}")
+            return {}
+        
+        video_to_positions = {}
+        for idx, item in enumerate(items):
+            if 'videoId' in item['snippet'].get('resourceId', {}):
+                vid = item['snippet']['resourceId']['videoId']
+                if vid not in video_to_positions:
+                    video_to_positions[vid] = []
+                video_to_positions[vid].append(idx)
+        
+        # Only keep videos that appear more than once
+        return {vid: positions for vid, positions in video_to_positions.items() if len(positions) > 1}
+
+    def _remove_playlist_item(self, service, playlist_id: str, item_id: str) -> bool:
+        """Remove a specific item from a playlist. Returns True if successful."""
+        try:
+            service.playlistItems().delete(id=item_id).execute()
+            return True
+        except HttpError as e:
+            print(f"  ✗ Error removing item {item_id} from playlist {playlist_id}: {e}")
+            return False
+
+    def _verify_playlist_completion(self, source_service, target_service, 
+                                    source_playlist_id: str, target_playlist_id: str) -> Dict:
+        """Verify that target playlist matches source playlist exactly.
+        
+        Returns dict with:
+        - source_count: number of videos in source
+        - target_count: number of videos in target  
+        - missing_in_target: set of video IDs in source but not in target
+        - extra_in_target: set of video IDs in target but not in source
+        - duplicates_in_target: dict of duplicate videos in target
+        """
+        # Get source videos
+        try:
+            source_items = self._get_playlist_items(source_service, source_playlist_id)
+            source_videos = set()
+            for item in source_items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    source_videos.add(item['snippet']['resourceId']['videoId'])
+        except HttpError as e:
+            return {'error': str(e), 'source_playlist_id': source_playlist_id}
+        
+        # Get target videos
+        try:
+            target_items = self._get_playlist_items(target_service, target_playlist_id)
+            target_videos = []  # Keep order for duplicate detection
+            for item in target_items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    target_videos.append(item['snippet']['resourceId']['videoId'])
+            target_videos_set = set(target_videos)
+        except HttpError as e:
+            return {'error': str(e), 'target_playlist_id': target_playlist_id}
+        
+        # Calculate differences
+        missing_in_target = source_videos - target_videos_set
+        extra_in_target = target_videos_set - source_videos
+        
+        # Check for duplicates in target
+        duplicates_in_target = {}
+        for vid in target_videos:
+            if vid in duplicates_in_target:
+                duplicates_in_target[vid].append(len(duplicates_in_target[vid]) + 1)
+            elif target_videos.count(vid) > 1:
+                positions = [i for i, v in enumerate(target_videos) if v == vid]
+                duplicates_in_target[vid] = positions[1:]  # Store extra positions
+        
+        return {
+            'source_count': len(source_videos),
+            'target_count': len(target_videos),
+            'unique_target_count': len(target_videos_set),
+            'missing_in_target': missing_in_target,
+            'extra_in_target': extra_in_target,
+            'duplicates_in_target': duplicates_in_target,
+            'is_complete': len(missing_in_target) == 0 and len(extra_in_target) == 0 and len(duplicates_in_target) == 0
+        }
+
     def migrate_subscriptions(self):
         """Migrate subscribed channels from source to target."""
         print("\n=== Migrating Subscriptions ===\n")
@@ -959,13 +1101,236 @@ class YTMusicMigrationTool:
         else:
             print("✓ Everything is already migrated!")
 
+    def prune_duplicate_playlists(self):
+        """Remove orphaned duplicate playlists from target account."""
+        print("\n=== Pruning Duplicate Playlists ===\n")
+        
+        if not self.args.check_existing:
+            print("Error: --check-existing is required for --prune-duplicate-playlists")
+            return
+        
+        # Find duplicates
+        duplicates = self._find_duplicate_playlists(self.target_yt)
+        
+        if not duplicates:
+            print("No duplicate playlists found on target account")
+            return
+        
+        print(f"Found {len(duplicates)} duplicate playlist names on target:\n")
+        
+        for name, playlist_ids in duplicates.items():
+            print(f"  '{name}': {len(playlist_ids)} playlists")
+            # Keep the first one, delete the rest
+            keep_id = playlist_ids[0]
+            delete_ids = playlist_ids[1:]
+            
+            for playlist_id in delete_ids:
+                if self.args.dry_run:
+                    print(f"    Would delete: {playlist_id}")
+                else:
+                    print(f"    Deleting: {playlist_id}...")
+                    if self._delete_playlist(self.target_yt, playlist_id):
+                        print(f"      ✓ Deleted playlist {playlist_id}")
+                    else:
+                        print(f"      ✗ Failed to delete playlist {playlist_id}")
+            print()
+
+    def deduplicate_videos(self):
+        """Remove duplicate videos from all playlists on target account."""
+        print("\n=== Deduplicating Videos in Playlists ===\n")
+        
+        # Get all playlists
+        playlists = self._get_user_playlists(self.target_yt, include_special=False)
+        
+        if not playlists:
+            print("No playlists found on target account")
+            return
+        
+        total_removed = 0
+        total_duplicates_found = 0
+        
+        for playlist in playlists:
+            playlist_id = playlist['id']
+            playlist_name = playlist['snippet']['title']
+            
+            # Find duplicates in this playlist
+            duplicates = self._get_duplicate_videos_in_playlist(self.target_yt, playlist_id)
+            
+            if not duplicates:
+                continue
+            
+            total_duplicates_found += 1
+            print(f"Playlist '{playlist_name}' ({playlist_id}):")
+            
+            # Get all items to find their IDs
+            try:
+                items = self._get_playlist_items(self.target_yt, playlist_id)
+            except HttpError as e:
+                print(f"  ✗ Could not read items: {e}")
+                continue
+            
+            # Build map of video_id -> [item_ids to keep, item_ids to delete]
+            # Keep first occurrence, delete subsequent ones
+            video_to_items = {}
+            for item in items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    vid = item['snippet']['resourceId']['videoId']
+                    if vid not in video_to_items:
+                        video_to_items[vid] = {'keep': item['id'], 'delete': []}
+                    else:
+                        video_to_items[vid]['delete'].append(item['id'])
+            
+            # Delete duplicate items
+            for vid, item_data in video_to_items.items():
+                if item_data['delete']:
+                    print(f"  Video {vid}: keeping {item_data['keep']}, removing {len(item_data['delete'])} duplicates")
+                    for item_id in item_data['delete']:
+                        if self.args.dry_run:
+                            print(f"    Would delete item: {item_id}")
+                        else:
+                            if self._remove_playlist_item(self.target_yt, playlist_id, item_id):
+                                total_removed += 1
+            print()
+        
+        if self.args.dry_run:
+            print(f"Dry run: Would remove {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+        else:
+            print(f"✓ Removed {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+
+    def verify_completion(self):
+        """Verify that all migrated playlists on target match source exactly."""
+        print("\n=== Verifying Playlist Completion ===\n")
+        
+        # Get source playlists
+        source_playlists = self._get_user_playlists(self.source_yt, include_special=False)
+        
+        if not source_playlists:
+            print("No playlists found on source account")
+            return
+        
+        # Build target playlist map
+        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
+        
+        all_complete = True
+        total_missing = 0
+        total_extra = 0
+        total_duplicates = 0
+        
+        for playlist in source_playlists:
+            playlist_name = playlist['snippet']['title']
+            source_id = playlist['id']
+            
+            if playlist_name not in target_playlist_map:
+                print(f"  ✗ MISSING: Playlist '{playlist_name}' not found on target")
+                all_complete = False
+                continue
+            
+            target_id = target_playlist_map[playlist_name]
+            result = self._verify_playlist_completion(
+                self.source_yt, self.target_yt, source_id, target_id
+            )
+            
+            if 'error' in result:
+                print(f"  ✗ ERROR checking '{playlist_name}': {result['error']}")
+                all_complete = False
+                continue
+            
+            is_complete = result['is_complete']
+            status_icon = "✓" if is_complete else "✗"
+            
+            print(f"  {status_icon} {playlist_name}:")
+            print(f"      Source: {result['source_count']} videos")
+            print(f"      Target: {result['unique_target_count']} unique videos ({result['target_count']} total)")
+            
+            if result['missing_in_target']:
+                print(f"      Missing in target: {len(result['missing_in_target'])} videos")
+                total_missing += len(result['missing_in_target'])
+                all_complete = False
+            
+            if result['extra_in_target']:
+                print(f"      Extra in target: {len(result['extra_in_target'])} videos")
+                total_extra += len(result['extra_in_target'])
+                all_complete = False
+            
+            if result['duplicates_in_target']:
+                print(f"      Duplicates in target: {len(result['duplicates_in_target'])} videos")
+                total_duplicates += len(result['duplicates_in_target'])
+                all_complete = False
+        
+        print()
+        if all_complete and total_missing == 0 and total_extra == 0 and total_duplicates == 0:
+            print("✓ All playlists match exactly!")
+        else:
+            print(f"✗ {total_missing} missing videos, {total_extra} extra videos, {total_duplicates} duplicate videos found")
+
+    def scan_duplicates(self):
+        """Scan for duplicate playlists and duplicate videos without making changes."""
+        print("\n=== Scanning for Duplicates (Read-Only) ===\n")
+        
+        # Scan for duplicate playlists
+        print("=== Duplicate Playlists ===")
+        duplicates = self._find_duplicate_playlists(self.target_yt)
+        
+        if not duplicates:
+            print("No duplicate playlist names found on target account")
+        else:
+            for name, playlist_ids in duplicates.items():
+                print(f"  ⚠ '{name}': {len(playlist_ids)} duplicate playlists")
+                print(f"      Using: {playlist_ids[0]}")
+                print(f"      Orphaned: {', '.join(playlist_ids[1:])}")
+        print()
+        
+        # Scan for duplicate videos within playlists
+        print("=== Duplicate Videos within Playlists ===")
+        playlists = self._get_user_playlists(self.target_yt, include_special=False)
+        
+        if not playlists:
+            print("No playlists found on target account")
+        else:
+            has_duplicates = False
+            for playlist in playlists:
+                playlist_name = playlist['snippet']['title']
+                playlist_id = playlist['id']
+                
+                duplicates = self._get_duplicate_videos_in_playlist(self.target_yt, playlist_id)
+                
+                if duplicates:
+                    has_duplicates = True
+                    print(f"  ⚠ '{playlist_name}' ({playlist_id}):")
+                    for vid, positions in duplicates.items():
+                        print(f"      Video {vid}: appears at positions {positions}")
+            
+            if not has_duplicates:
+                print("No duplicate videos found within any playlist")
+        
+        print("\nScan complete. Use --prune-duplicate-playlists or --deduplicate-videos to fix issues.")
+
     def run(self):
         """Run the migration based on command line arguments."""
         try:
+            # Handle scan-only modes first (no modifications)
             if self.args.scan_only:
                 self.scan_migration_status()
                 return
             
+            if self.args.scan_duplicates:
+                self.scan_duplicates()
+                return
+            
+            # Handle verification and cleanup modes
+            if self.args.verify_completion:
+                self.verify_completion()
+                return
+            
+            if self.args.prune_duplicate_playlists:
+                self.prune_duplicate_playlists()
+                return
+            
+            if self.args.deduplicate_videos:
+                self.deduplicate_videos()
+                return
+            
+            # Regular migration
             if self.args.all:
                 print("Starting full migration...\n")
                 self.migrate_playlists()
@@ -1127,6 +1492,37 @@ Examples:
         '--scan-only',
         action='store_true',
         help='Scan and report what needs to be migrated without making changes (uses minimal quota)'
+    )
+
+    # Duplicate and verification options
+    parser.add_argument(
+        '--verify-completion',
+        action='store_true',
+        help='Verify that migrated playlists on target match source exactly'
+    )
+
+    parser.add_argument(
+        '--prune-duplicate-playlists',
+        action='store_true',
+        help='Delete orphaned duplicate playlists on target account (requires --check-existing)'
+    )
+
+    parser.add_argument(
+        '--deduplicate-videos',
+        action='store_true',
+        help='Check and remove duplicate videos within playlists on target account'
+    )
+
+    parser.add_argument(
+        '--scan-duplicates',
+        action='store_true',
+        help='Scan for duplicate playlists and videos without making changes (quota-light)'
+    )
+
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Preview changes without actually making them (use with --prune-duplicate-playlists or --deduplicate-videos)'
     )
     
     return parser.parse_args()
