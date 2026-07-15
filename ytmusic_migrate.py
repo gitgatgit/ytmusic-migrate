@@ -1142,12 +1142,22 @@ class YTMusicMigrationTool:
         # Get all playlists
         playlists = self._get_user_playlists(self.target_yt, include_special=False)
         
-        if not playlists:
-            print("No playlists found on target account")
-            return
-        
         total_removed = 0
         total_duplicates_found = 0
+        
+        # Add Liked Music (Migrated) playlist to the list if it exists
+        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
+        liked_playlist_name = "Liked Music (Migrated)"
+        liked_playlist = None
+        if liked_playlist_name in target_playlist_map:
+            liked_playlist = {
+                'id': target_playlist_map[liked_playlist_name],
+                'snippet': {'title': liked_playlist_name}
+            }
+        
+        # Process user-created playlists
+        if not playlists:
+            print("No user-created playlists found on target account")
         
         for playlist in playlists:
             playlist_id = playlist['id']
@@ -1192,10 +1202,126 @@ class YTMusicMigrationTool:
                                 total_removed += 1
             print()
         
+        # Also deduplicate Liked Music (Migrated) playlist
+        if liked_playlist:
+            playlist_id = liked_playlist['id']
+            playlist_name = liked_playlist['snippet']['title']
+            
+            duplicates = self._get_duplicate_videos_in_playlist(self.target_yt, playlist_id)
+            
+            if duplicates:
+                total_duplicates_found += 1
+                print(f"Playlist '{playlist_name}' ({playlist_id}):")
+                
+                try:
+                    items = self._get_playlist_items(self.target_yt, playlist_id)
+                except HttpError as e:
+                    print(f"  ✗ Could not read items: {e}")
+                    return
+                
+                video_to_items = {}
+                for item in items:
+                    if 'videoId' in item['snippet'].get('resourceId', {}):
+                        vid = item['snippet']['resourceId']['videoId']
+                        if vid not in video_to_items:
+                            video_to_items[vid] = {'keep': item['id'], 'delete': []}
+                        else:
+                            video_to_items[vid]['delete'].append(item['id'])
+                
+                for vid, item_data in video_to_items.items():
+                    if item_data['delete']:
+                        print(f"  Video {vid}: keeping {item_data['keep']}, removing {len(item_data['delete'])} duplicates")
+                        for item_id in item_data['delete']:
+                            if self.args.dry_run:
+                                print(f"    Would delete item: {item_id}")
+                            else:
+                                if self._remove_playlist_item(self.target_yt, playlist_id, item_id):
+                                    total_removed += 1
+                print()
+        
         if self.args.dry_run:
-            print(f"Dry run: Would remove {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+            if total_duplicates_found > 0:
+                print(f"Dry run: Would remove {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+            else:
+                print("No duplicate videos found in any playlist")
         else:
-            print(f"✓ Removed {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+            if total_removed > 0:
+                print(f"✓ Removed {total_removed} duplicate video entries from {total_duplicates_found} playlists")
+            else:
+                print("No duplicate videos found in any playlist")
+
+    def _verify_liked_music_completion(self) -> Dict:
+        """Verify that Liked Music on target matches source LM playlist.
+        
+        Returns dict with completion status.
+        """
+        # Get source Liked Music videos (LM = Liked Music special playlist)
+        try:
+            source_items = self._get_playlist_items(self.source_yt, SPECIAL_PLAYLISTS['liked_music'])
+            source_videos = set()
+            for item in source_items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    source_videos.add(item['snippet']['resourceId']['videoId'])
+        except HttpError as e:
+            return {'error': f"Source LM: {e}", 'type': 'liked_music'}
+        
+        # Also try Liked Videos (LL) as fallback
+        try:
+            ll_items = self._get_playlist_items(self.source_yt, SPECIAL_PLAYLISTS['liked_videos'])
+            for item in ll_items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    source_videos.add(item['snippet']['resourceId']['videoId'])
+        except HttpError:
+            pass  # LL might not exist, that's okay
+        
+        if not source_videos:
+            return {'error': "No liked music found on source", 'type': 'liked_music'}
+        
+        # Find target Liked Music (Migrated) playlist
+        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
+        liked_playlist_name = "Liked Music (Migrated)"
+        
+        if liked_playlist_name not in target_playlist_map:
+            return {
+                'error': f"Target playlist '{liked_playlist_name}' not found",
+                'type': 'liked_music',
+                'source_count': len(source_videos)
+            }
+        
+        target_id = target_playlist_map[liked_playlist_name]
+        
+        # Get target videos
+        try:
+            target_items = self._get_playlist_items(self.target_yt, target_id)
+            target_videos = []
+            for item in target_items:
+                if 'videoId' in item['snippet'].get('resourceId', {}):
+                    target_videos.append(item['snippet']['resourceId']['videoId'])
+            target_videos_set = set(target_videos)
+        except HttpError as e:
+            return {'error': f"Target: {e}", 'type': 'liked_music'}
+        
+        # Calculate differences
+        missing_in_target = source_videos - target_videos_set
+        extra_in_target = target_videos_set - source_videos
+        
+        # Check for duplicates in target
+        duplicates_in_target = {}
+        for vid in target_videos:
+            if target_videos.count(vid) > 1 and vid not in duplicates_in_target:
+                positions = [i for i, v in enumerate(target_videos) if v == vid]
+                duplicates_in_target[vid] = positions[1:]
+        
+        return {
+            'type': 'liked_music',
+            'source_count': len(source_videos),
+            'target_count': len(target_videos),
+            'unique_target_count': len(target_videos_set),
+            'missing_in_target': missing_in_target,
+            'extra_in_target': extra_in_target,
+            'duplicates_in_target': duplicates_in_target,
+            'is_complete': len(missing_in_target) == 0 and len(extra_in_target) == 0 and len(duplicates_in_target) == 0
+        }
 
     def verify_completion(self):
         """Verify that all migrated playlists on target match source exactly."""
@@ -1204,62 +1330,98 @@ class YTMusicMigrationTool:
         # Get source playlists
         source_playlists = self._get_user_playlists(self.source_yt, include_special=False)
         
-        if not source_playlists:
-            print("No playlists found on source account")
-            return
-        
-        # Build target playlist map
-        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
-        
         all_complete = True
         total_missing = 0
         total_extra = 0
         total_duplicates = 0
         
-        for playlist in source_playlists:
-            playlist_name = playlist['snippet']['title']
-            source_id = playlist['id']
+        # Verify user-created playlists
+        if source_playlists:
+            # Build target playlist map
+            target_playlist_map = self._get_existing_playlists_map(self.target_yt)
             
-            if playlist_name not in target_playlist_map:
-                print(f"  ✗ MISSING: Playlist '{playlist_name}' not found on target")
+            for playlist in source_playlists:
+                playlist_name = playlist['snippet']['title']
+                source_id = playlist['id']
+                
+                if playlist_name not in target_playlist_map:
+                    print(f"  ✗ MISSING: Playlist '{playlist_name}' not found on target")
+                    all_complete = False
+                    continue
+                
+                target_id = target_playlist_map[playlist_name]
+                result = self._verify_playlist_completion(
+                    self.source_yt, self.target_yt, source_id, target_id
+                )
+                
+                if 'error' in result:
+                    print(f"  ✗ ERROR checking '{playlist_name}': {result['error']}")
+                    all_complete = False
+                    continue
+                
+                is_complete = result['is_complete']
+                status_icon = "✓" if is_complete else "✗"
+                
+                print(f"  {status_icon} {playlist_name}:")
+                print(f"      Source: {result['source_count']} videos")
+                print(f"      Target: {result['unique_target_count']} unique videos ({result['target_count']} total)")
+                
+                if result['missing_in_target']:
+                    print(f"      Missing in target: {len(result['missing_in_target'])} videos")
+                    total_missing += len(result['missing_in_target'])
+                    all_complete = False
+                
+                if result['extra_in_target']:
+                    print(f"      Extra in target: {len(result['extra_in_target'])} videos")
+                    total_extra += len(result['extra_in_target'])
+                    all_complete = False
+                
+                if result['duplicates_in_target']:
+                    print(f"      Duplicates in target: {len(result['duplicates_in_target'])} videos")
+                    total_duplicates += len(result['duplicates_in_target'])
+                    all_complete = False
+        else:
+            print("No user-created playlists found on source account")
+        
+        # Verify Liked Music
+        print("\n=== Verifying Liked Music ===\n")
+        liked_result = self._verify_liked_music_completion()
+        
+        if 'error' in liked_result:
+            if "not found" in liked_result['error']:
+                print(f"  ⚠ {liked_result['error']}")
+                if 'source_count' in liked_result:
+                    print(f"      Source has {liked_result['source_count']} liked videos")
                 all_complete = False
-                continue
-            
-            target_id = target_playlist_map[playlist_name]
-            result = self._verify_playlist_completion(
-                self.source_yt, self.target_yt, source_id, target_id
-            )
-            
-            if 'error' in result:
-                print(f"  ✗ ERROR checking '{playlist_name}': {result['error']}")
+            else:
+                print(f"  ✗ ERROR: {liked_result['error']}")
                 all_complete = False
-                continue
-            
-            is_complete = result['is_complete']
+        else:
+            is_complete = liked_result['is_complete']
             status_icon = "✓" if is_complete else "✗"
             
-            print(f"  {status_icon} {playlist_name}:")
-            print(f"      Source: {result['source_count']} videos")
-            print(f"      Target: {result['unique_target_count']} unique videos ({result['target_count']} total)")
+            print(f"  {status_icon} Liked Music (Migrated):")
+            print(f"      Source: {liked_result['source_count']} videos")
+            print(f"      Target: {liked_result['unique_target_count']} unique videos ({liked_result['target_count']} total)")
             
-            if result['missing_in_target']:
-                print(f"      Missing in target: {len(result['missing_in_target'])} videos")
-                total_missing += len(result['missing_in_target'])
+            if liked_result['missing_in_target']:
+                print(f"      Missing in target: {len(liked_result['missing_in_target'])} videos")
+                total_missing += len(liked_result['missing_in_target'])
                 all_complete = False
             
-            if result['extra_in_target']:
-                print(f"      Extra in target: {len(result['extra_in_target'])} videos")
-                total_extra += len(result['extra_in_target'])
+            if liked_result['extra_in_target']:
+                print(f"      Extra in target: {len(liked_result['extra_in_target'])} videos")
+                total_extra += len(liked_result['extra_in_target'])
                 all_complete = False
             
-            if result['duplicates_in_target']:
-                print(f"      Duplicates in target: {len(result['duplicates_in_target'])} videos")
-                total_duplicates += len(result['duplicates_in_target'])
+            if liked_result['duplicates_in_target']:
+                print(f"      Duplicates in target: {len(liked_result['duplicates_in_target'])} videos")
+                total_duplicates += len(liked_result['duplicates_in_target'])
                 all_complete = False
         
         print()
         if all_complete and total_missing == 0 and total_extra == 0 and total_duplicates == 0:
-            print("✓ All playlists match exactly!")
+            print("✓ All playlists and liked music match exactly!")
         else:
             print(f"✗ {total_missing} missing videos, {total_extra} extra videos, {total_duplicates} duplicate videos found")
 
@@ -1284,10 +1446,11 @@ class YTMusicMigrationTool:
         print("=== Duplicate Videos within Playlists ===")
         playlists = self._get_user_playlists(self.target_yt, include_special=False)
         
+        has_duplicates = False
+        
         if not playlists:
-            print("No playlists found on target account")
+            print("No user-created playlists found on target account")
         else:
-            has_duplicates = False
             for playlist in playlists:
                 playlist_name = playlist['snippet']['title']
                 playlist_id = playlist['id']
@@ -1299,9 +1462,21 @@ class YTMusicMigrationTool:
                     print(f"  ⚠ '{playlist_name}' ({playlist_id}):")
                     for vid, positions in duplicates.items():
                         print(f"      Video {vid}: appears at positions {positions}")
-            
-            if not has_duplicates:
-                print("No duplicate videos found within any playlist")
+        
+        # Also check Liked Music (Migrated) playlist
+        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
+        liked_playlist_name = "Liked Music (Migrated)"
+        if liked_playlist_name in target_playlist_map:
+            liked_id = target_playlist_map[liked_playlist_name]
+            duplicates = self._get_duplicate_videos_in_playlist(self.target_yt, liked_id)
+            if duplicates:
+                has_duplicates = True
+                print(f"  ⚠ '{liked_playlist_name}' ({liked_id}):")
+                for vid, positions in duplicates.items():
+                    print(f"      Video {vid}: appears at positions {positions}")
+        
+        if not has_duplicates:
+            print("No duplicate videos found within any playlist")
         
         print("\nScan complete. Use --prune-duplicate-playlists or --deduplicate-videos to fix issues.")
 
