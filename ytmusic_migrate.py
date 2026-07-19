@@ -466,9 +466,8 @@ class YTMusicMigrationTool:
                 ).execute()
                 success_count += 1
                 
-                # Print progress every 50 videos for large batches
-                if total_videos > 50 and (success_count + skipped_count) % 50 == 0:
-                    print(f"  Progress: {success_count + skipped_count}/{total_videos} videos", end="\r")
+                # Print progress for each video
+                print(f"  Progress: {success_count + skipped_count}/{total_videos} videos", end="\r")
                 
                 # Update state if tracking
                 if track_id:
@@ -500,8 +499,8 @@ class YTMusicMigrationTool:
         if track_id:
             self._save_migration_state()
         
-        # Print newline if we printed progress
-        if total_videos > 50:
+        # Print newline after progress
+        if total_videos > 0:
             print()  # Newline after progress
         
         return success_count, failed_count, skipped_count
