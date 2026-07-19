@@ -606,7 +606,16 @@ class YTMusicMigrationTool:
                 
                 source_count = len(video_ids)
                 if video_ids:
-                    print(f"  Source has {source_count} videos, adding...")
+                    # Check how many already in state for this playlist
+                    already_in_state = 0
+                    if new_playlist_id in self.migration_state.get('playlists', {}):
+                        already_in_state = len(self.migration_state['playlists'][new_playlist_id])
+                    
+                    if already_in_state > 0:
+                        print(f"  Source has {source_count} videos, {already_in_state} already migrated, adding remaining...")
+                    else:
+                        print(f"  Source has {source_count} videos, adding...")
+                    
                     success, failed, skipped = self._add_items_to_playlist(
                         self.target_yt, new_playlist_id, video_ids,
                         track_id=new_playlist_id,
@@ -677,6 +686,40 @@ class YTMusicMigrationTool:
             print("No Liked Songs/Music found to migrate on source account")
             return
         
+        # Deduplicate source videos
+        all_video_ids = list(set(all_video_ids))
+        source_count = len(all_video_ids)
+        print(f"Total unique videos to migrate: {source_count}\n")
+        
+        # Check if already complete before starting
+        target_playlist_map = self._get_existing_playlists_map(self.target_yt)
+        liked_playlist_name = "Liked Music (Migrated)"
+        
+        if liked_playlist_name in target_playlist_map:
+            # Quick check: if target has >= source videos, likely complete
+            target_id = target_playlist_map[liked_playlist_name]
+            try:
+                target_items = self._get_playlist_items(self.target_yt, target_id)
+                target_count = len(target_items)
+                
+                # If target has at least as many videos as source, check if complete
+                if target_count >= source_count:
+                    result = self._verify_liked_music_completion()
+                    if 'error' not in result and result.get('is_complete'):
+                        print(f"✓ Liked Music already complete ({target_count}/{source_count} videos)")
+                        print("  Skipping migration")
+                        return
+                    # If not complete but has many videos, show current status
+                    elif target_count > 0:
+                        existing_state = set()
+                        if 'liked_songs' in self.migration_state:
+                            existing_state = set(self.migration_state['liked_songs'].get('video_ids', []))
+                        already_there = len(existing_state)
+                        if already_there > 0:
+                            print(f"✓ Resuming from {already_there}/{source_count} videos already migrated")
+            except HttpError:
+                pass
+        
         # Deduplicate
         all_video_ids = list(set(all_video_ids))
         print(f"Total unique videos to migrate: {len(all_video_ids)}\n")
@@ -720,7 +763,17 @@ class YTMusicMigrationTool:
         # Add videos to the playlist and track progress
         try:
             source_count = len(all_video_ids)
-            print(f"Source has {source_count} videos, adding...")
+            
+            # Check how many already in state
+            already_in_state = 0
+            if 'liked_songs' in self.migration_state:
+                already_in_state = len(self.migration_state['liked_songs'].get('video_ids', []))
+            
+            if already_in_state > 0:
+                print(f"Source has {source_count} videos, {already_in_state} already migrated, adding remaining...")
+            else:
+                print(f"Source has {source_count} videos, adding...")
+            
             # Save the playlist ID in state for tracking
             if 'liked_songs' not in self.migration_state:
                 self.migration_state['liked_songs'] = {'playlist_id': None, 'video_ids': []}
