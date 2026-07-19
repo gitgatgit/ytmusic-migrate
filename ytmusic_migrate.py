@@ -1912,8 +1912,8 @@ def main():
     """Main entry point."""
     print("""
     ╔══════════════════════════════════════════════════════╗
-    ║        YTMusic Migrate - YouTube Music Migration Tool       ║
-    ║                  v1.2.0 | github.com/gitgatgit             ║
+    ║    YTMusic Migrate - YouTube Music Migration Tool    ║
+    ║             v1.3.0 | github.com/gitgatgit            ║
     ╚══════════════════════════════════════════════════════╝
     """)
     
