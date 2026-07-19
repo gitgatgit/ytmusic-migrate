@@ -62,11 +62,22 @@ SPECIAL_PLAYLISTS = {
 class YTMusicMigrationTool:
     """Main class for YouTube Music account migration."""
 
+    # Quota costs (YouTube Data API v3)
+    QUOTA_READ = 3  # list operations
+    QUOTA_WRITE = 50  # insert operations
+    QUOTA_DELETE = 50  # delete operations
+    DAILY_QUOTA = 10000  # Default daily quota
+
     def __init__(self, args):
         self.args = args
         self.source_yt = None
         self.target_yt = None
         self.token_cache: Dict[str, Dict[str, Any]] = {}
+        
+        # Quota tracking
+        self.quota_read_count = 0
+        self.quota_write_count = 0
+        self.quota_delete_count = 0
         
         # Load token cache
         self._load_token_cache()
@@ -97,6 +108,35 @@ class YTMusicMigrationTool:
         else:
             self.token_cache = {}
             TOKEN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _add_quota_read(self, count: int = 1):
+        """Add to read quota counter."""
+        self.quota_read_count += count
+
+    def _add_quota_write(self, count: int = 1):
+        """Add to write quota counter."""
+        self.quota_write_count += count
+
+    def _add_quota_delete(self, count: int = 1):
+        """Add to delete quota counter."""
+        self.quota_delete_count += count
+
+    def get_quota_usage(self) -> int:
+        """Get estimated total quota used."""
+        return (self.quota_read_count * self.QUOTA_READ + 
+                self.quota_write_count * self.QUOTA_WRITE + 
+                self.quota_delete_count * self.QUOTA_DELETE)
+
+    def print_quota_status(self, message: str = "") -> None:
+        """Print current quota usage with optional message."""
+        total = self.get_quota_usage()
+        read_quota = self.quota_read_count * self.QUOTA_READ
+        write_quota = self.quota_write_count * self.QUOTA_WRITE
+        delete_quota = self.quota_delete_count * self.QUOTA_DELETE
+        
+        prefix = f"  [{message}]" if message else ""
+        print(f"{prefix} Quota: ~{total} units ({self.quota_read_count} reads, {self.quota_write_count} writes, {self.quota_delete_count} deletes)")
+        print(f"         Daily limit: {self.DAILY_QUOTA} units (~{self.DAILY_QUOTA - total} remaining)")
 
     def _save_token_cache(self):
         """Save token cache to file."""
@@ -340,6 +380,7 @@ class YTMusicMigrationTool:
                 )
                 response = request.execute()
                 playlists.extend(response.get('items', []))
+                self._add_quota_read(1)  # playlists.list = ~3 units
                 
                 next_page_token = response.get('nextPageToken')
                 if not next_page_token:
@@ -371,6 +412,7 @@ class YTMusicMigrationTool:
             )
             response = request.execute()
             items.extend(response.get('items', []))
+            self._add_quota_read(1)  # playlistItems.list = ~3 units
             
             next_page_token = response.get('nextPageToken')
             if not next_page_token:
@@ -411,6 +453,7 @@ class YTMusicMigrationTool:
             body=request_body
         )
         response = request.execute()
+        self._add_quota_write(1)  # playlists.insert = 50 units
         return response['id']
 
     def _add_items_to_playlist(self, service, playlist_id: str, video_ids: List[str], 
@@ -465,6 +508,7 @@ class YTMusicMigrationTool:
                     body=item
                 ).execute()
                 success_count += 1
+                self._add_quota_write(1)  # playlistItems.insert = 50 units
                 
                 # Print progress for each video
                 print(f"  Progress: {success_count + skipped_count}/{total_videos} videos", end="\r")
@@ -807,6 +851,7 @@ class YTMusicMigrationTool:
                 for sub in response.get('items', []):
                     if 'channelId' in sub['snippet'].get('resourceId', {}):
                         existing.add(sub['snippet']['resourceId']['channelId'])
+                self._add_quota_read(1)  # subscriptions.list = ~3 units
                 
                 next_page_token = response.get('nextPageToken')
                 if not next_page_token:
@@ -838,6 +883,7 @@ class YTMusicMigrationTool:
         """Delete a playlist. Returns True if successful."""
         try:
             service.playlists().delete(id=playlist_id).execute()
+            self._add_quota_delete(1)  # playlists.delete = 50 units
             return True
         except HttpError as e:
             print(f"  ✗ Error deleting playlist {playlist_id}: {e}")
@@ -869,6 +915,7 @@ class YTMusicMigrationTool:
         """Remove a specific item from a playlist. Returns True if successful."""
         try:
             service.playlistItems().delete(id=item_id).execute()
+            self._add_quota_delete(1)  # playlistItems.delete = 50 units
             return True
         except HttpError as e:
             print(f"  ✗ Error removing item {item_id} from playlist {playlist_id}: {e}")
@@ -946,6 +993,7 @@ class YTMusicMigrationTool:
             )
             response = request.execute()
             subscriptions.extend(response.get('items', []))
+            self._add_quota_read(1)  # subscriptions.list = ~3 units
             
             next_page_token = response.get('nextPageToken')
             if not next_page_token:
@@ -992,6 +1040,7 @@ class YTMusicMigrationTool:
                 )
                 request.execute()
                 subscribed_count += 1
+                self._add_quota_write(1)  # subscriptions.insert = 50 units
                 
                 if subscribed_count % 10 == 0:
                     print(f"  Subscribed to {subscribed_count}/{len(channels_to_migrate)} new channels")
@@ -1700,6 +1749,7 @@ class YTMusicMigrationTool:
             # Regular migration
             if self.args.all:
                 print("Starting full migration...\n")
+                print(f"Initial quota: {self.DAILY_QUOTA} units available\n")
                 self.migrate_playlists()
                 self.migrate_watch_later()
                 self.migrate_liked_songs()
@@ -1715,6 +1765,9 @@ class YTMusicMigrationTool:
                     self.migrate_subscriptions()
             
             print("\n=== Migration Complete ===")
+            # Display quota usage for migration
+            if self.quota_read_count > 0 or self.quota_write_count > 0:
+                self.print_quota_status("Final")
             
         except KeyboardInterrupt:
             print("\n\nMigration interrupted by user.")
